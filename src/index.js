@@ -1108,9 +1108,17 @@ async function handleAdminAccountData(request, env, origin) {
     const aiRow = await env.DB
       .prepare('SELECT ai_base_url, ai_api_key, ai_model FROM account_settings WHERE account = ?')
       .bind(acc).first();
-    const keyRow = await env.DB
-      .prepare('SELECT key, port, created_at FROM account_keys WHERE phone = ? ORDER BY created_at DESC LIMIT 1')
-      .bind(target.phone).first();
+    // 小程序接口密钥：一个密钥 = 一个能连进来的小程序客户端。取全部（最多 50 条）以反映绑定数量；
+    // apikey 字段仍给"最新一条"以兼容「配置/密钥」tab 的单密钥编辑 UI。
+    const keysRes = await env.DB
+      .prepare('SELECT key, port, created_at FROM account_keys WHERE phone = ? ORDER BY created_at DESC LIMIT 50')
+      .bind(target.phone).all();
+    const allKeys = (keysRes.results || []).map((k) => ({ key: k.key, apiPort: k.port, createdAt: k.created_at }));
+    // 密钥总数（不受上面 50 条展示上限影响，用于「绑了几个小程序」的准确计数）
+    const keyCountRes = await env.DB
+      .prepare('SELECT COUNT(*) AS n FROM account_keys WHERE phone = ?').bind(target.phone).first();
+    const miniKeyCount = (keyCountRes && Number(keyCountRes.n)) || 0;
+    const keyRow = allKeys[0] || null;
     const devRes = await env.DB
       .prepare(
         `SELECT ip, ua, MAX(ts) AS last_seen, COUNT(*) AS hits
@@ -1126,7 +1134,10 @@ async function handleAdminAccountData(request, env, origin) {
       settings: aiRow
         ? { baseUrl: aiRow.ai_base_url, model: aiRow.ai_model, hasKey: Boolean(aiRow.ai_api_key) }
         : null,
-      apikey: keyRow ? { key: keyRow.key, apiPort: keyRow.port, createdAt: keyRow.created_at } : null,
+      apikey: keyRow ? { key: keyRow.key, apiPort: keyRow.port, createdAt: keyRow.createdAt } : null,
+      // 该账号全部小程序密钥（每个代表一个可连接的小程序设备）
+      miniKeys: allKeys,
+      miniKeyCount,
       // 真实访问设备：从该账号的操作日志按 IP+UA 去重统计（浏览器/小程序访问痕迹）
       deviceAccess: (devRes.results || []).map((d) => ({ ip: d.ip || '—', ua: d.ua || '', lastSeen: d.last_seen, hits: Number(d.hits) || 0 })),
       // 遗留旧 PIN 体系绑定（可解绑；现行体系多为空）

@@ -680,24 +680,32 @@
     box.innerHTML='<div class="msg warn">载入中…</div>';
     api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'device'}).toString(),'GET')
       .then(function(d){
-        var acc=d.deviceAccess||[], devs=d.devices||[], k=d.apikey||{};
-        // ① 已知客户端摘要（来自 account_keys 表，不依赖日志）
-        var html='<h3 style="font-size:14px;margin:0 0 10px">已知客户端</h3>';
-        html+='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
-          '<tr style="border-bottom:1px solid var(--line)"><td style="padding:7px 0"><b>微信小程序</b>（接口密钥）</td>'+
-          '<td style="text-align:right;padding:7px 0">'+
-            (k.key?'<span style="color:var(--ok);font-weight:600">已绑定</span> · 端口 '+esc(k.apiPort||443)
-                 :'<span style="color:var(--sub)">未绑定</span>')+'</td></tr>'+
-          '<tr style="border-bottom:1px solid var(--line)"><td style="padding:7px 0"><b>网页 / 浏览器</b>（JWT 登录态）</td>'+
-          '<td style="text-align:right;padding:7px 0;color:var(--sub)">7 天免登录，无服务端注册</td></tr>'+
-        '</table>'+
-        '<p style="font-size:11px;color:var(--sub);margin:8px 0 0">小程序的「已绑定」代表它<b>可以</b>连进来；下方访问记录能看出它<b>实际</b>连了没有。</p>';
+        var acc=d.deviceAccess||[], devs=d.devices||[];
+        var keys=d.miniKeys||[], keyN=d.miniKeyCount!=null?d.miniKeyCount:keys.length;
+        function keyId(k){ if(!k)return '—'; var s=String(k); if(s.length<=20)return s; return s.slice(0,10)+'…'+s.slice(-4)+'（'+s.length+' 位）'; }
+
+        // ① 已知客户端（来自 account_keys / device_access，不依赖日志）
+        var html='<h3 style="font-size:14px;margin:0 0 10px">已识别客户端</h3>';
+
+        // 微信小程序：一个接口密钥 = 一个能连进来的小程序
+        html+='<p style="font-size:13px;margin:0 0 8px"><b>微信小程序</b>：绑定 <b style="color:'+(keyN?'var(--ok)':'var(--sub)')+'">'+keyN+'</b> 个（每个密钥可让一个小程序连进来）</p>';
+        if(keyN){
+          html+='<div class="tbl-wrap"><table><thead><tr><th>密钥标识</th><th>端口</th><th>创建时间</th></tr></thead><tbody>'+
+            keys.map(function(x){return '<tr><td style="font-family:monospace;font-size:12px">'+esc(keyId(x.key))+'</td><td>'+esc(x.apiPort||443)+'</td><td>'+fmtDate(x.createdAt)+'</td></tr>';}).join('')+
+            '</tbody></table></div>';
+          if(keys.length<keyN)html+='<div style="font-size:11px;color:var(--sub);margin-top:4px">仅显示最近 '+keys.length+' 个，共 '+keyN+' 个。</div>';
+        } else {
+          html+='<div style="font-size:12px;color:var(--sub)">该账号尚未生成小程序接口密钥（小程序无法连接）。可在「配置/密钥」页生成。</div>';
+        }
+
+        // 网页 / 浏览器：服务端不存设备注册表，只能从日志推断活跃 IP/UA
+        html+='<p style="font-size:13px;margin:14px 0 4px"><b>网页 / 浏览器</b>：服务端不登记设备（登录态存浏览器本地，7 天有效），<b>无法精确统计有几个浏览器</b>；下方「访问记录」按日志 IP+UA 还原最近活跃过的访问来源。</p>';
 
         // ② 访问记录（按操作日志 IP+UA 去重；日志被清空则此处为空）
         html+='<h3 style="font-size:14px;margin:16px 0 10px">访问记录（按日志统计，共 '+acc.length+' 台设备）</h3>';
-        if(!acc.length)html+='<div style="font-size:12px;color:var(--sub)">暂无访问记录（该账号操作日志尚未记录，或日志已被清空）。上方「已绑定」仍说明有小程序可用密钥连接。</div>';
+        if(!acc.length)html+='<div style="font-size:12px;color:var(--sub)">暂无访问记录（该账号操作日志尚未记录，或日志已被清空）。上方小程序密钥仍独立可查。</div>';
         else{
-          html+='<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>IP</th><th>最近访问</th><th class="num">次数</th></tr></thead><tbody>'+
+          html+='<div class="tbl-wrap"><table><thead><tr><th>设备特征</th><th>IP</th><th>最近访问</th><th class="num">次数</th></tr></thead><tbody>'+
             acc.map(function(x){return '<tr><td>'+esc(uaLabel(x.ua))+'</td><td style="font-family:monospace">'+esc(x.ip)+'</td><td>'+fmtDate(x.lastSeen)+'</td><td class="num">'+esc(x.hits)+'</td></tr>';}).join('')+
             '</tbody></table></div>';
         }
