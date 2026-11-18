@@ -680,18 +680,31 @@
     box.innerHTML='<div class="msg warn">载入中…</div>';
     api('/api/admin/account/data?'+new URLSearchParams({phone:acPhone,kind:'device'}).toString(),'GET')
       .then(function(d){
-        var acc=d.deviceAccess||[], devs=d.devices||[];
-        var html='<h3 style="font-size:14px;margin:0 0 10px">访问设备（'+acc.length+'）</h3>'+
-          '<p style="font-size:12px;color:var(--sub);margin:0 0 10px;line-height:1.6">按该账号操作日志的 IP + 浏览器特征去重，反映「谁在用」（网页 / 小程序）。'+
-          '这是<b>只读统计</b>——浏览器登录靠 7 天登录态（JWT），小程序靠「配置/密钥」页里的接口密钥，二者都不在此表。</p>';
-        if(!acc.length)html+='<div style="font-size:12px;color:var(--sub)">暂无访问记录（日志尚未记到该账号的操作）。</div>';
+        var acc=d.deviceAccess||[], devs=d.devices||[], k=d.apikey||{};
+        // ① 已知客户端摘要（来自 account_keys 表，不依赖日志）
+        var html='<h3 style="font-size:14px;margin:0 0 10px">已知客户端</h3>';
+        html+='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+          '<tr style="border-bottom:1px solid var(--line)"><td style="padding:7px 0"><b>微信小程序</b>（接口密钥）</td>'+
+          '<td style="text-align:right;padding:7px 0">'+
+            (k.key?'<span style="color:var(--ok);font-weight:600">已绑定</span> · 端口 '+esc(k.apiPort||443)
+                 :'<span style="color:var(--sub)">未绑定</span>')+'</td></tr>'+
+          '<tr style="border-bottom:1px solid var(--line)"><td style="padding:7px 0"><b>网页 / 浏览器</b>（JWT 登录态）</td>'+
+          '<td style="text-align:right;padding:7px 0;color:var(--sub)">7 天免登录，无服务端注册</td></tr>'+
+        '</table>'+
+        '<p style="font-size:11px;color:var(--sub);margin:8px 0 0">小程序的「已绑定」代表它<b>可以</b>连进来；下方访问记录能看出它<b>实际</b>连了没有。</p>';
+
+        // ② 访问记录（按操作日志 IP+UA 去重；日志被清空则此处为空）
+        html+='<h3 style="font-size:14px;margin:16px 0 10px">访问记录（按日志统计，共 '+acc.length+' 台设备）</h3>';
+        if(!acc.length)html+='<div style="font-size:12px;color:var(--sub)">暂无访问记录（该账号操作日志尚未记录，或日志已被清空）。上方「已绑定」仍说明有小程序可用密钥连接。</div>';
         else{
           html+='<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>IP</th><th>最近访问</th><th class="num">次数</th></tr></thead><tbody>'+
             acc.map(function(x){return '<tr><td>'+esc(uaLabel(x.ua))+'</td><td style="font-family:monospace">'+esc(x.ip)+'</td><td>'+fmtDate(x.lastSeen)+'</td><td class="num">'+esc(x.hits)+'</td></tr>';}).join('')+
             '</tbody></table></div>';
         }
-        html+='<h3 style="font-size:14px;margin:18px 0 10px">遗留设备绑定（'+devs.length+'）</h3>';
-        if(!devs.length)html+='<div style="font-size:12px;color:var(--sub)">无遗留绑定。旧飞牛 PIN 体系的设备绑定已并入账号，正常不会有条目。</div>';
+
+        // ③ 遗留旧 PIN 体系设备绑定（可解绑）
+        html+='<h3 style="font-size:14px;margin:16px 0 10px">遗留设备绑定（'+devs.length+'）</h3>';
+        if(!devs.length)html+='<div style="font-size:12px;color:var(--sub)">无遗留绑定（旧 PIN 体系已并入账号，正常无条目）。</div>';
         else{
           html+='<div class="tbl-wrap"><table><thead><tr><th>设备 ID</th><th>绑定时间</th><th>操作</th></tr></thead><tbody>'+
             devs.map(function(x){return '<tr><td style="font-family:monospace">'+esc(x.deviceId)+'</td><td>'+fmtDate(x.createdAt)+'</td>'+
