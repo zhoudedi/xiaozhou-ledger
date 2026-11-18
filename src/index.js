@@ -1574,6 +1574,36 @@ const GIFT_COLUMNS = `gifts.id, gifts.event_id AS eventId, gifts.person, gifts.r
 
 const EVENT_COLUMNS = `id, name, type, date, created_at AS createdAt`;
 
+/** 金额分 → 元（去掉整数值的末尾 .00，便于日志可读）。 */
+function fenYuan(fen) {
+  const v = (Number(fen) || 0) / 100;
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+}
+
+/** 礼金的可读详情片段：谁（关系）收/随 N 元 · 方式。 */
+function giftDataDetail(g) {
+  const dir = g.direction === 'in' ? '收礼' : '随礼';
+  let s = `${g.person}（${g.relation || '未知关系'}）${dir} ${fenYuan(g.amountFen)}元`;
+  const m = METHOD_LABELS[g.method];
+  if (m) s += ` · ${m}`;
+  if (g.date) s += ` @${g.date}`;
+  return s;
+}
+
+/** 活动的可读详情片段：名称（类型）日期。 */
+function eventDataDetail(ev) {
+  const label = EVENT_LABELS[ev.type] || ev.type || '';
+  let s = ev.name ? `${ev.name}${label && ev.name !== label ? `（${label}）` : ''}` : label;
+  if (ev.date) s += ` @${ev.date}`;
+  return s || '未知活动';
+}
+
+/** 把"改了什么数据"的可读详情挂到响应上，路由层写日志时优先采用。best-effort。 */
+function withLogDetail(res, detail) {
+  try { res.__logDetail = String(detail || ''); } catch { /* 只读响应忽略 */ }
+  return res;
+}
+
 async function handleEventsGet(env, account, origin) {
   const { results } = await env.DB.prepare(
     `SELECT ${EVENT_COLUMNS} FROM events WHERE account = ?
@@ -1598,7 +1628,7 @@ async function handleEventsCreate(request, env, account, origin) {
   )
     .bind(account, type, date)
     .first();
-  if (existing) return jsonRes(existing, 200, origin);
+  if (existing) return withLogDetail(jsonRes(existing, 200, origin), '活动已存在，未重复创建 ' + eventDataDetail(existing));
 
   const event = {
     id: crypto.randomUUID(),
@@ -1623,11 +1653,11 @@ async function handleEventsCreate(request, env, account, origin) {
       )
         .bind(account, type, date)
         .first();
-      if (raced) return jsonRes(raced, 200, origin);
+      if (raced) return withLogDetail(jsonRes(raced, 200, origin), '活动已存在，未重复创建 ' + eventDataDetail(raced));
     }
     throw e;
   }
-  return jsonRes(event, 200, origin);
+  return withLogDetail(jsonRes(event, 200, origin), '新增活动 ' + eventDataDetail(event));
 }
 
 async function handleEventUpdate(request, env, account, eventId, origin) {
@@ -1646,6 +1676,9 @@ async function handleEventUpdate(request, env, account, eventId, origin) {
     .first();
   if (clash) return fail('已存在相同类型与日期的活动', 400, origin);
 
+  const before = await env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ? AND account = ?`)
+    .bind(eventId, account)
+    .first();
   const result = await env.DB.prepare(
     'UPDATE events SET name = ?, type = ?, date = ? WHERE id = ? AND account = ?'
   )
@@ -1655,24 +1688,34 @@ async function handleEventUpdate(request, env, account, eventId, origin) {
   const event = await env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ? AND account = ?`)
     .bind(eventId, account)
     .first();
-  return jsonRes(event, 200, origin);
+  const detail = before
+    ? `改活动：${eventDataDetail(before)} → ${eventDataDetail(event)}`
+    : `改活动 ${eventDataDetail(event)}`;
+  return withLogDetail(jsonRes(event, 200, origin), detail);
 }
 
 async function handleEventDelete(env, account, eventId, origin) {
   // 先确认活动存在（且属于本账号），再级联删除礼金：
   // 否则活动不存在时礼金已被误删（历史顺序缺陷）。
-  const exists = await env.DB.prepare('SELECT 1 AS x FROM events WHERE id = ? AND account = ?')
+  const exists = await env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ? AND account = ?`)
     .bind(eventId, account)
     .first();
   if (!exists) return fail('活动不存在', 404, origin);
 
+  const gres = await env.DB.prepare('SELECT COUNT(*) AS n FROM gifts WHERE event_id = ? AND account = ?')
+    .bind(eventId, account)
+    .first();
+  const giftCount = (gres && Number(gres.n)) || 0;
   await env.DB.prepare('DELETE FROM gifts WHERE event_id = ? AND account = ?')
     .bind(eventId, account)
     .run();
   await env.DB.prepare('DELETE FROM events WHERE id = ? AND account = ?')
     .bind(eventId, account)
     .run();
-  return jsonRes({ deleted: true }, 200, origin);
+  return withLogDetail(
+    jsonRes({ deleted: true }, 200, origin),
+    `删活动 ${eventDataDetail(exists)}，级联删除其下 ${giftCount} 条礼金`
+  );
 }
 
 async function handleGiftsGet(request, env, account, origin) {
@@ -1765,6 +1808,9 @@ async function handleGiftsCreate(request, env, account, origin) {
     ...value,
     createdAt: nowIso(),
   };
+  const ev = await env.DB.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = ? AND account = ?`)
+    .bind(gift.eventId, account)
+    .first();
   await env.DB.prepare(
     `INSERT INTO gifts
      (id, device_id, account, event_id, person, relation, direction, amount_fen, method, date, note, created_at)
@@ -1785,7 +1831,11 @@ async function handleGiftsCreate(request, env, account, origin) {
       gift.createdAt
     )
     .run();
-  return jsonRes(gift, 200, origin);
+  const evLabel = ev ? ev.name || EVENT_LABELS[ev.type] : '';
+  return withLogDetail(
+    jsonRes(gift, 200, origin),
+    `新增礼金 ${giftDataDetail(gift)}${evLabel ? ` · 活动「${evLabel}」` : ''}${gift.note ? ` · 备注 ${gift.note}` : ''}`
+  );
 }
 
 async function handleGiftGet(env, account, giftId, origin) {
@@ -1800,6 +1850,10 @@ async function handleGiftsUpdate(request, env, account, giftId, origin) {
   const body = await readJson(request);
   const { error, value } = await validateGiftBody(body, env, account);
   if (error) return fail(error, 400, origin);
+
+  const before = await env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE id = ? AND account = ?`)
+    .bind(giftId, account)
+    .first();
 
   const result = await env.DB.prepare(
     `UPDATE gifts SET event_id = ?, person = ?, relation = ?, direction = ?,
@@ -1825,15 +1879,19 @@ async function handleGiftsUpdate(request, env, account, giftId, origin) {
   const gift = await env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE id = ? AND account = ?`)
     .bind(giftId, account)
     .first();
-  return jsonRes(gift, 200, origin);
+  const detail = before ? `改礼金：${giftDataDetail(before)} → ${giftDataDetail(gift)}` : `改礼金 ${giftDataDetail(gift)}`;
+  return withLogDetail(jsonRes(gift, 200, origin), detail);
 }
 
 async function handleGiftsDelete(env, account, giftId, origin) {
+  const before = await env.DB.prepare(`SELECT ${GIFT_COLUMNS} FROM gifts WHERE id = ? AND account = ?`)
+    .bind(giftId, account)
+    .first();
   const result = await env.DB.prepare('DELETE FROM gifts WHERE id = ? AND account = ?')
     .bind(giftId, account)
     .run();
   if (!result.meta || result.meta.changes === 0) return fail('记录不存在或无权限删除', 404, origin);
-  return jsonRes({ deleted: true }, 200, origin);
+  return withLogDetail(jsonRes({ deleted: true }, 200, origin), before ? `删礼金 ${giftDataDetail(before)}` : '删礼金（记录已不存在）');
 }
 
 /* ------------------------------------------------------------------ */
@@ -2435,7 +2493,8 @@ async function handleAiParse(request, env, account, origin) {
   if (!normalized.records.length && !normalized.errors.length) {
     normalized.errors.push('没有解析出记录，换个说法试试');
   }
-  return jsonRes(normalized, 200, origin);
+  const detail = `AI 解析出 ${normalized.records.length} 条待记记录${normalized.errors.length ? `，${normalized.errors.length} 条异常` : ''}（原文 ${text.length} 字）`;
+  return withLogDetail(jsonRes(normalized, 200, origin), detail);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3053,7 +3112,7 @@ async function apiRequest(request, env) {
         await maybeLazyPurgeLogs(env, request);
         const adminLog = async (resOrPromise, detail, target) => {
           const res = await resOrPromise;
-          await recordLog(env, { actor: 'admin', action: classifyAction(request.method, path), target: target || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: detail || '' }, request);
+          await recordLog(env, { actor: 'admin', action: classifyAction(request.method, path), target: target || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: (res && res.__logDetail) || detail || '' }, request);
           return res;
         };
         if (path === '/api/admin/users' && request.method === 'GET') {
@@ -3161,7 +3220,7 @@ async function apiRequest(request, env) {
       // 普通用户请求统一走日志：记录操作人/动作/目标/状态码（纯只读 GET 会被降级矩阵跳过）
       const userLog = async (resOrPromise, detail) => {
         const res = await resOrPromise;
-        await recordLog(env, { actor, action: classifyAction(request.method, path), target: account || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: detail || '' }, request);
+        await recordLog(env, { actor, action: classifyAction(request.method, path), target: account || '', method: request.method, path, status: res.status, ok: res.status < 400, ip, detail: (res && res.__logDetail) || detail || '' }, request);
         return res;
       };
 
