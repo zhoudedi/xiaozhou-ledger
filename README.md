@@ -380,6 +380,8 @@ curl -X POST https://你的域名/api/admin/purge-account \
 | POST | `/api/admin/settings` | 存管理员运行参数（`{logRetentionDays}` 1–365、`{contactEmail}` 忘记密码联系邮箱） |
 | GET | `/api/admin/feedbacks?limit=&page=&kind=&status=` | 查看意见反馈/重置申请（`kind=reset/suggestion`、`status=new/done`） |
 | POST | `/api/admin/feedback/resolve?id=` | 标记某条反馈已处理 |
+| POST | `/api/admin/feedback/delete?id=` | 删除某条反馈记录（防积压占库） |
+| POST | `/api/admin/feedback/purge` | 批量清理反馈：body `{all:true}` 清空全部；缺省只删「已处理」 |
 | POST | `/api/admin/reset-password`、`/api/admin/purge-account` | 命令行管理（需 `X-Admin-Key`） |
 
 **用户认证头**（按优先级）：`X-Api-Key`/`X-Token`/`Authorization: Bearer`（JWT 或小程序密钥）→ `X-Ledger-Token`（设备/游客）。不同账号数据相互隔离。

@@ -2603,6 +2603,26 @@ async function handleAdminFeedbackResolve(request, env, origin) {
   return jsonRes({ id, resolved: true }, 200, origin);
 }
 
+/** 删除单条反馈记录（防止反馈积压占用 D1 存储）。 */
+async function handleAdminFeedbackDelete(request, env, origin) {
+  const url = new URL(request.url);
+  const id = Number.parseInt(url.searchParams.get('id') || '0', 10);
+  if (!Number.isFinite(id) || id < 1) return fail('缺少反馈 id', 400, origin);
+  const res = await env.DB.prepare(`DELETE FROM feedback WHERE id = ?`).bind(id).run();
+  const deleted = (res && res.meta && res.meta.changes) || 0;
+  return jsonRes({ id, deleted }, 200, origin);
+}
+
+/** 批量清理反馈记录：默认只删「已处理」(done)；all=true 时删除全部（用于彻底腾出 D1 空间）。 */
+async function handleAdminFeedbackPurge(request, env, origin) {
+  const body = await readJson(request);
+  const all = body && body.all === true;
+  const sql = all ? `DELETE FROM feedback` : `DELETE FROM feedback WHERE status = 'done'`;
+  const res = await env.DB.prepare(sql).run();
+  const purged = (res && res.meta && res.meta.changes) || 0;
+  return jsonRes({ purged, all }, 200, origin);
+}
+
 async function handleMembership(origin) {
   return jsonRes({ lifetime: true, priceFen: 1990 }, 200, origin);
 }
@@ -3103,12 +3123,18 @@ async function apiRequest(request, env) {
         if (path === '/api/admin/settings' && request.method === 'POST') {
           return adminLog(await handleAdminSettingsSave(request, env, origin), '保存运行参数');
         }
-        // ---- 意见反馈（查看 / 标记已处理）----
+        // ---- 意见反馈（查看 / 标记已处理 / 删除 / 批量清理）----
         if (path === '/api/admin/feedbacks' && request.method === 'GET') {
           return adminLog(handleAdminFeedbacks(request, env, origin), '查反馈');
         }
         if (path === '/api/admin/feedback/resolve' && request.method === 'POST') {
           return adminLog(handleAdminFeedbackResolve(request, env, origin), '标记反馈已处理');
+        }
+        if (path === '/api/admin/feedback/delete' && request.method === 'POST') {
+          return adminLog(handleAdminFeedbackDelete(request, env, origin), '删除反馈');
+        }
+        if (path === '/api/admin/feedback/purge' && request.method === 'POST') {
+          return adminLog(await handleAdminFeedbackPurge(request, env, origin), '批量清理反馈');
         }
       }
 

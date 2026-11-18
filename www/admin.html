@@ -204,13 +204,15 @@
     <!-- ⑤ 意见反馈（用户提交的反馈 + 密码重置申请，人工查看/处理） -->
     <div class="card" id="feedbackCard">
       <h2>意见反馈</h2>
-      <p class="desc">用户从账本「写反馈」或登录页「忘记密码」提交的反馈与密码重置申请会汇总到这里（按来源区分 web/小程序）。<b>密码重置申请</b>显示目标手机号，点「帮用户重置」设新密码后，把新密码告知用户即可；其余为功能建议/问题反馈，处理完点「标记已处理」。</p>
+      <p class="desc">用户从账本「写反馈」或登录页「忘记密码」提交的反馈与密码重置申请会汇总到这里（按来源区分 web/小程序）。<b>密码重置申请</b>显示目标手机号，点「帮用户重置」设新密码后，把新密码告知用户即可；其余为功能建议/问题反馈，处理完点「标记已处理」。为避免反馈长期积压占用数据库，可点行内「删除」逐条删除，或用「清理已处理」「清空全部」批量腾出空间。</p>
 
       <!-- 筛选 -->
       <div class="inline" style="margin-bottom:12px">
         <select id="fbStatus"><option value="">全部状态</option><option value="new">待处理</option><option value="done">已处理</option></select>
         <select id="fbKind"><option value="">全部类型</option><option value="reset">密码重置申请</option><option value="suggestion">建议/反馈</option></select>
         <button class="btn sm" id="fbQueryBtn">查询</button>
+        <button class="btn ghost sm" id="fbPurgeDoneBtn">清理已处理</button>
+        <button class="btn danger sm" id="fbPurgeAllBtn">清空全部</button>
         <span class="msg" id="fbMsg" style="margin:0"></span>
       </div>
 
@@ -850,6 +852,7 @@
           } else {
             acts='<span class="msg" style="margin:0;color:var(--sub)">已完成</span>';
           }
+          acts+='<button class="btn danger sm" onclick="__fbDel('+Number(f.id)+')">删除</button>';
           var detail=esc(f.content);
           if(f.contact) detail+=' · 联系方式：'+esc(f.contact);
           return '<tr>'+
@@ -889,7 +892,25 @@
       })
       .catch(function(e){toast('重置失败：'+e.message);});
   };
+  window.__fbDel=function(id){
+    if(!confirm('确定删除这条反馈记录？删除后不可恢复。'))return;
+    fetch('/api/admin/feedback/delete?id='+id,{method:'POST',headers:{'X-Admin-Token':token()}})
+      .then(function(r){if(!r.ok)throw new Error('删除失败');loadFeedbacks(fbPage);toast('已删除');})
+      .catch(function(e){toast(e.message)});
+  };
   $('fbQueryBtn').onclick=function(){loadFeedbacks(1);};
+  $('fbPurgeDoneBtn').onclick=function(){
+    if(!confirm('确定批量删除所有「已处理」的反馈记录？删除后不可恢复。'))return;
+    api('/api/admin/feedback/purge','POST',{})
+      .then(function(d){toast('已清理 '+(d.purged||0)+' 条已处理反馈');loadFeedbacks(1);})
+      .catch(function(e){toast(e.message)});
+  };
+  $('fbPurgeAllBtn').onclick=function(){
+    if(!confirm('确定清空全部反馈与密码重置申请？此操作不可恢复！'))return;
+    api('/api/admin/feedback/purge','POST',{all:true})
+      .then(function(d){toast('已清空 '+(d.purged||0)+' 条反馈');loadFeedbacks(1);})
+      .catch(function(e){toast(e.message)});
+  };
 
   /* 启动：有 token 直接进主界面并验证 */
   if(token()){ showMain(); loadUsers(); loadLogs(1); loadEmail(); loadFeedbacks(1); } else { showLogin(); }
