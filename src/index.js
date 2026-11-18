@@ -215,17 +215,20 @@ function uaOf(request) {
 
 /**
  * 审计日志降级矩阵：返回 true 表示「跳过不记」。
- *  - 管理员操作：全记（低频、高价值）
- *  - 失败（status>=400，含 401/403/404/429/5xx）：全记（撞库/越权信号）
- *  - 写类（POST/PUT/DELETE）：全记（状态变更）
- *  - 纯只读 GET（含 health/session/check/overview/列表/CSV/配置查询等）：跳过（砍写放大，
- *    给真实业务写留配额余量；人情定量级下高频只读刷页面不产生审计价值）
+ *  - 失败请求（status>=400，含 401/403/404/429/5xx，撞库/越权信号）：全记（管理员鉴权失败也记）
+ *  - 写类操作（POST/PUT/DELETE，状态变更）：全记
+ *  - 纯只读 GET（含 health/session/check/overview/列表/CSV/配置查询、**管理员翻日志页/查列表**等）：
+ *    跳过（砍写放大，给真实业务写留配额余量；高频只读刷页面不产生审计价值）
+ *  说明：管理员的"翻日志页/查用户列表"这类只读 GET 也跳过，避免每次操作都堆一堆
+ *  `GET /api/admin/logs`；管理员的写操作与失败仍会记录，审计不受影响。
  */
 function shouldSkipRecord(entry) {
-  if (entry.actor === 'admin') return false;
-  if ((Number(entry.status) || 0) >= 400) return false;
   const m = entry.method || '';
+  // 失败请求（含 401/403/404/429/5xx）：全记
+  if ((Number(entry.status) || 0) >= 400) return false;
+  // 写类操作（非 GET）：全记
   if (m && m !== 'GET') return false;
+  // 纯只读 GET（管理员 / 普通用户一致）：跳过
   return true;
 }
 
@@ -1109,6 +1112,13 @@ async function handleAdminAccountData(request, env, origin) {
       .prepare('SELECT key, port, created_at FROM account_keys WHERE phone = ? ORDER BY created_at DESC LIMIT 1')
       .bind(target.phone).first();
     const devRes = await env.DB
+      .prepare(
+        `SELECT ip, ua, MAX(ts) AS last_seen, COUNT(*) AS hits
+         FROM logs WHERE actor = ?
+         GROUP BY ip, ua ORDER BY last_seen DESC LIMIT 30`
+      ).bind(acc).all();
+    // 旧 PIN 体系遗留的设备绑定（现行体系一般无行；保留以兼容历史账号的解绑能力）
+    const legacyRes = await env.DB
       .prepare('SELECT device_id, created_at FROM device_bindings WHERE phone = ?').bind(target.phone).all();
     return jsonRes({
       phone: target.phone,
@@ -1117,7 +1127,10 @@ async function handleAdminAccountData(request, env, origin) {
         ? { baseUrl: aiRow.ai_base_url, model: aiRow.ai_model, hasKey: Boolean(aiRow.ai_api_key) }
         : null,
       apikey: keyRow ? { key: keyRow.key, apiPort: keyRow.port, createdAt: keyRow.created_at } : null,
-      devices: (devRes.results || []).map((d) => ({ deviceId: d.device_id, createdAt: d.created_at })),
+      // 真实访问设备：从该账号的操作日志按 IP+UA 去重统计（浏览器/小程序访问痕迹）
+      deviceAccess: (devRes.results || []).map((d) => ({ ip: d.ip || '—', ua: d.ua || '', lastSeen: d.last_seen, hits: Number(d.hits) || 0 })),
+      // 遗留旧 PIN 体系绑定（可解绑；现行体系多为空）
+      devices: (legacyRes.results || []).map((d) => ({ deviceId: d.device_id, createdAt: d.created_at })),
     }, 200, origin);
   }
 
